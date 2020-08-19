@@ -1,0 +1,14 @@
+version: "3.7"
+
+services:
+  caddy:
+    container_name: humanbios-websocket
+    image: humanbios-websocket
+    restart: unless-stopped
+    volumes:
+    - ./log:/app/log
+
+networks:
+  default:
+    external:
+      name: caddynet

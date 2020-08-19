@@ -1,0 +1,3 @@
+sanic
+sanic-cors
+python-dotenv==0.13.0
