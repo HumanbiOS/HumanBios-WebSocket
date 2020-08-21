@@ -49,19 +49,97 @@ MAXSIZE = 15
 @app.websocket('/api/messages')
 async def serve_messages(request, ws):
     # [DEBUG]
-    logging.info(request.cookies)
+    # logging.info(request.cookies)
     # get session from cookies
     session = request.cookies.get('humanbios-session')
-    # set websocket to according session
-    if session:
+
+    # If no session cookies -> done wrong
+    #if not session:
+    #    return json({
+    #        "event": "error", 
+    #        "text": "No cookies found, please make sure to set 'humanbios-session'\n" \
+    #                "Or if you are making cross-origin request, you have to include " \
+    #                "it in the 'start' event"
+    #    })
+    
+    # Recieve start event
+    payload = await ws.recv()
+    payload = js.loads(payload)
+    if payload.get("event") == "start":
+        if not session:
+            session = payload.get("session")
+            # if still no session -> return error
+            if not session:
+                return json({
+                    "event": "error", 
+                    "code": "wrong-code",
+                    "text": "No cookies found, please make sure to set 'humanbios-session'\n" \
+                            "Or if you are making cross-origin request, you have to include " \
+                            "session in the 'start' event"
+                })
+        
+        # set websocket to according session
         cache[session]["socket"] = ws
         # get name from cookies
-        name = request.cookies.get('humanbios-name')
+        # name = request.cookies.get('humanbios-name')
+        name = "You"
         # get queue of the cache
         q = cache[session]["history"]
+        
+        # empty history
+        if not q:
+            # send `/start` command to trigger conversation
+            payload = {
+                "user": {
+                    #"first_name": name,
+                    "first_name": f"WebUser[{session}]",
+                    "user_id": session
+                },
+                "chat": {
+                    "chat_id": session
+                },
+                "service_in": "webchat",
+                "security_token": INSTANCE_TOKEN,
+                "via_instance": INSTANCE_NAME,
+                "has_message": True,
+                "message": {
+                    "text": "/start"
+                }
+            }
+            # [DEBUG]
+            logging.info(f"Starting conv of the user[{session}]")
+            # send data to the server
+            async with aiohttp.ClientSession() as client:
+                await client.post(f"{SERVER_URL}/api/process_message", json=payload, headers=H)
+        # has cached history
+        else:
+            # [DEBUG]
+            logging.info(f"Loading cache history[{len(q)} items] for user[{session}]..")
+            # for each message in the history (from oldest to newest)
+            for index, each_message in enumerate(q):
+                # if not the newest message -> force remove buttons
+                if index < len(q) - 1:
+                    each_message['buttons'] = None
+                # configure event so client will know what to do with it
+                each_message['event'] = "new_message"
+                # send dumped json via socket
+                await ws.send(js.dumps(each_message))
     else:
-        q = None
-        name = None
+        return json({
+            "event": "error",
+            "code": "wrong-event",
+            "text": "First session , please make sure to set 'humanbios-session'\n" \
+                    "Or if you are making cross-origin request, you have to include " \
+                    "it in the 'start' event"
+        })
+        
+    # set websocket to according session
+    cache[session]["socket"] = ws
+    # get name from cookies
+    # name = request.cookies.get('humanbios-name')
+    name = "You"
+    # get queue of the cache
+    q = cache[session]["history"]
 
     while True:
         # recieve new events
@@ -77,7 +155,8 @@ async def serve_messages(request, ws):
             # fill requirements according to the server SCHEMA
             payload.update({
                 "user": {
-                    "first_name": name,
+                    #"first_name": name,
+                    "first_name": f"WebUser[{session}]",
                     "user_id": session
                 },
                 "chat": {
@@ -120,48 +199,13 @@ async def serve_messages(request, ws):
             # send message to the server
             async with aiohttp.ClientSession() as client:
                 await client.post(f"{SERVER_URL}/api/process_message", json=payload, headers=H)
-        # if start event
-        elif payload.get("event") == "start":
-            if not session:
-                session = payload.get("session")
-                cache[session]["socket"] = ws
-                # get name from cookies
-                name = request.cookies.get('humanbios-name')
-                # get queue of the cache
-                q = cache[session]["history"]
-            # empty history
-            if not q:
-                # send `/start` command to trigger conversation
-                payload = {
-                    "user": {
-                        "first_name": name,
-                        "user_id": session
-                    },
-                    "chat": {
-                        "chat_id": session
-                    },
-                    "service_in": "webchat",
-                    "security_token": INSTANCE_TOKEN,
-                    "via_instance": INSTANCE_NAME,
-                    "has_message": True,
-                    "message": {
-                        "text": "/start"
-                    }
-                }
-                # send data to the server
-                async with aiohttp.ClientSession() as client:
-                    await client.post(f"{SERVER_URL}/api/process_message", json=payload, headers=H)
-            # has cached history
-            else:
-                # for each message in the history (from oldest to newest)
-                for index, each_message in enumerate(q):
-                    # if not the newest message -> force remove buttons
-                    if index < len(q) - 1:
-                        each_message['buttons'] = None
-                    # configure event so client will know what to do with it
-                    each_message['event'] = "new_message"
-                    # send dumped json via socket
-                    await ws.send(js.dumps(each_message))
+        else:
+            return json({
+                "event": "error",
+                "code": "unsupported-event",
+                "text": f"One of the following events was expected: new_message. Recieved {payload['event']} instead."
+            })
+
 
 @app.route('/api/webhook/out', methods=['POST'])
 async def webhook_from_server(request):
@@ -197,7 +241,7 @@ async def webhook_from_server(request):
     return json({"status": 200, "timestamp": time.monotonic()})
 
 
-@app.route('/api/get_session')
+@app.route('/api/get_session', methods=['GET', 'OPTIONS'])
 async def serve_session(request):
     # get session id from the cookies
     session = request.cookies.get('humanbios-session')
@@ -216,9 +260,9 @@ async def serve_session(request):
         status = 204
     # respond with status and relevant session
     resp = json({"status": status, "session": session})
-    # set client cookies session
     # @Important: doesn't work with cross origin requests
     # @Important: front-end app has to create cookies by itself
+    # set client cookies session
     resp.cookies['humanbios-session'] = session
     return resp
 
@@ -257,7 +301,7 @@ if __name__ == "__main__":
         filemode="a+",
         format=formatter,
         datefmt=date_format,
-        level=logging.ERROR
+        level=logging.INFO
     )
 
     asyncio.run(setup())
