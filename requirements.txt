@@ -1,3 +1,4 @@
 sanic
 sanic-cors
+aiohttp
 python-dotenv==0.13.0
